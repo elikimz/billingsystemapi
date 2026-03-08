@@ -69,19 +69,13 @@ class PaymentMethod(str, enum.Enum):
     CASH = "cash"
     BANK = "bank"
     CARD = "card"
+    VOUCHER = "voucher"
 
 
 class TransactionType(str, enum.Enum):
     PAYMENT = "payment"
     SUBSCRIPTION_PURCHASE = "subscription_purchase"
     SUBSCRIPTION_RENEWAL = "subscription_renewal"
-    REFERRAL_BONUS = "referral_bonus"
-    REFERRAL_REBATE = "referral_rebate"
-    TASK_REWARD = "task_reward"
-    COMMISSION = "commission"
-    GIFT_REDEMPTION = "gift_redemption"
-    WEALTH_FUND_MATURITY = "wealth_fund_maturity"
-    WITHDRAWAL = "withdrawal"
     ADJUSTMENT = "adjustment"
 
 
@@ -253,6 +247,7 @@ class Payment(Base, UUIDMixin, TimestampMixin):
 
     user = relationship("User", back_populates="payments")
     plan = relationship("Plan", back_populates="payments")
+    transactions = relationship("Transaction", foreign_keys="Transaction.payment_id", back_populates="payment")
 
 
 # =========================
@@ -302,6 +297,8 @@ class Subscription(Base, UUIDMixin, TimestampMixin):
     payment_id = Column(UUID(as_uuid=True), ForeignKey("payments.id"), nullable=True)
     voucher_id = Column(UUID(as_uuid=True), ForeignKey("vouchers.id"), nullable=True)
 
+    payment_reference = Column(String(255), nullable=True)
+    started_at = Column(DateTime, nullable=True)
     mikrotik_username = Column(String(255), nullable=True)
     mikrotik_profile = Column(String(100), nullable=True)
     sync_status = Column(String(50), nullable=True)
@@ -337,6 +334,7 @@ class Transaction(Base, UUIDMixin, TimestampMixin):
     description = Column(Text, nullable=True)
 
     user = relationship("User", back_populates="transactions")
+    payment = relationship("Payment", foreign_keys=[payment_id], back_populates="transactions")
 
 
 # =========================
@@ -381,6 +379,7 @@ class HotspotSession(Base, UUIDMixin, TimestampMixin):
 
     user = relationship("User", back_populates="sessions")
     router = relationship("Router", back_populates="sessions")
+    subscription = relationship("Subscription", foreign_keys=[subscription_id])
 
 
 # =========================
