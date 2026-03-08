@@ -15,7 +15,7 @@ from app.schemas.schemas import PaymentInitiate, PaymentOut
 from app.integrations.mpesa import initiate_stk_push
 from app.integrations.sms import send_sms, build_subscription_sms
 from app.config.settings import settings
-from app.core.deps import get_current_admin
+from app.core.deps import get_current_admin, get_current_user
 
 router = APIRouter(prefix="/payments", tags=["Payments"])
 logger = logging.getLogger(__name__)
@@ -261,6 +261,20 @@ async def check_payment_status(payment_id: UUID, db: AsyncSession = Depends(get_
         "mpesa_receipt": payment.mpesa_receipt_number,
         "created_at": payment.created_at.isoformat(),
     }
+
+
+@router.get("/my", response_model=List[PaymentOut])
+async def my_payments(
+    db: AsyncSession = Depends(get_async_db),
+    current_user=Depends(get_current_user),
+):
+    """List current user's payments."""
+    result = await db.execute(
+        select(Payment)
+        .where(Payment.user_id == current_user.id)
+        .order_by(Payment.created_at.desc())
+    )
+    return result.scalars().all()
 
 
 @router.get("/", response_model=List[PaymentOut])

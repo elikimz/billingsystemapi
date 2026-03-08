@@ -214,9 +214,9 @@ class RouterCreate(BaseModel):
     name: str
     ip_address: str
     location: Optional[str] = None
-    mikrotik_username: Optional[str] = None
-    mikrotik_password: Optional[str] = None
-    mikrotik_port: int = 8728
+    username: str = "admin"
+    password_encrypted: str = ""
+    api_port: int = 8728
 
 
 class RouterOut(BaseModel):

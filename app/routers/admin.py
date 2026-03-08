@@ -240,9 +240,9 @@ async def create_router(
         name=payload.name,
         ip_address=payload.ip_address,
         location=payload.location,
-        mikrotik_username=payload.mikrotik_username,
-        mikrotik_password=payload.mikrotik_password,
-        mikrotik_port=payload.mikrotik_port,
+        username=payload.username,
+        password_encrypted=payload.password_encrypted,
+        api_port=payload.api_port,
         status=RouterStatus.ACTIVE,
     )
     db.add(router_obj)
