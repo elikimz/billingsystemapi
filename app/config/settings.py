@@ -8,16 +8,16 @@ class Settings(BaseSettings):
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
 
-    # M-Pesa
-    MPESA_CONSUMER_KEY: str = ""
-    MPESA_CONSUMER_SECRET: str = ""
-    MPESA_PASSKEY: str = ""
-    MPESA_SHORTCODE: str = ""
-    MPESA_CALLBACK_URL: str = "https://example.com/api/v1/payments/mpesa/callback"
+    # M-Pesa - Production Credentials Hardcoded as Defaults
     MPESA_ENV: str = "production"
+    MPESA_CONSUMER_KEY: str = "LM6MxKjJXDzqlxYK7ej1A6DWUd8sVJ6XYf22ByFh4R4rgykA"
+    MPESA_CONSUMER_SECRET: str = "MAjliohCqtGGvshySY8RkHZSF88eemW1Wp77PjwxO3ci0m7242fdGGEXv2TQkIjk"
+    MPESA_PASSKEY: str = "d4f1dd629fbd7638a5272362f3b42057bf5fed09bca901db242b0ac7e88ee993"
+    MPESA_SHORTCODE: str = "3538431"
+    MPESA_CALLBACK_URL: str = "https://api.elijahkimani.com/api/v1/payments/mpesa/callback"
 
     # SMS
-    SMS_MODE: str = "sandbox"
+    SMS_MODE: str = "production"
 
     # Admin defaults
     ADMIN_DEFAULT_EMAIL: str = "admin@hotspot.local"
