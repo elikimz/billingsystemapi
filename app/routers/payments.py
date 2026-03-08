@@ -87,6 +87,7 @@ async def initiate_payment(
             callback_url=callback_url,
         )
 
+        # STK Push must have ResponseCode 0 to be considered "sent"
         if stk_response.get("ResponseCode") == "0":
             payment.checkout_request_id = stk_response.get("CheckoutRequestID")
             payment.merchant_request_id = stk_response.get("MerchantRequestID")
@@ -100,18 +101,25 @@ async def initiate_payment(
                 "plan": plan.name,
             }
         else:
+            # Explicitly mark as failed if Safaricom rejects
             payment.status = PaymentStatus.FAILED
+            payment.failure_reason = stk_response.get("errorMessage", "STK push rejected by Safaricom")
             await db.commit()
+            
+            # Log the detailed failure for debugging
+            logger.error(f"STK Push rejected for {payload.phone_number}: {stk_response}")
+            
             raise HTTPException(
                 status_code=400,
-                detail=stk_response.get("errorMessage", "STK push failed. Try again."),
+                detail=stk_response.get("errorMessage", "STK push failed. Check your phone number or try again."),
             )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"STK push error: {e}")
+        logger.error(f"STK push unexpected error: {e}", exc_info=True)
         payment.status = PaymentStatus.FAILED
+        payment.failure_reason = str(e)
         await db.commit()
         raise HTTPException(status_code=500, detail=f"Payment initiation failed: {str(e)}")
 
@@ -237,6 +245,7 @@ async def mpesa_callback(
         else:
             # Payment failed
             payment.status = PaymentStatus.FAILED
+            payment.failure_reason = stk_callback.get("ResultDesc")
             logger.info(f"Payment failed for {checkout_request_id}: {stk_callback.get('ResultDesc')}")
             await db.commit()
 
@@ -260,6 +269,7 @@ async def check_payment_status(payment_id: UUID, db: AsyncSession = Depends(get_
         "amount": float(payment.amount),
         "mpesa_receipt": payment.mpesa_receipt_number,
         "created_at": payment.created_at.isoformat(),
+        "failure_reason": payment.failure_reason
     }
 
 

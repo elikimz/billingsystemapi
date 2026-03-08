@@ -2,6 +2,7 @@ import httpx
 import base64
 import logging
 import json
+import re
 from datetime import datetime, timezone
 from app.core.mpesa_config import MpesaConfig
 
@@ -18,7 +19,7 @@ async def get_mpesa_access_token() -> str:
 
     # Request preparation
     url = f"{base_url}/oauth/v1/generate?grant_type=client_credentials"
-    logger.info(f"M-Pesa Token Request: {url} (Env: {config['env']})")
+    logger.info(f"M-Pesa OAuth Request: {url} (Env: {config['env']})")
     
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -56,6 +57,26 @@ def generate_mpesa_password(shortcode: str, passkey: str) -> tuple[str, str]:
     password = base64.b64encode(raw.encode()).decode()
     return password, timestamp
 
+def normalize_phone_number(phone: str) -> str:
+    """Normalize phone number to 254XXXXXXXXX format."""
+    # Remove all non-numeric characters
+    clean = re.sub(r"\D", "", phone)
+    
+    if clean.startswith("0"):
+        clean = "254" + clean[1:]
+    elif clean.startswith("7") or clean.startswith("1"):
+        clean = "254" + clean
+    elif clean.startswith("+254"):
+        clean = clean[1:]
+    elif not clean.startswith("254") and len(clean) == 9:
+        clean = "254" + clean
+        
+    # Ensure it's exactly 12 digits
+    if len(clean) != 12 or not clean.startswith("254"):
+        logger.warning(f"Phone number normalization result might be invalid: {clean}")
+        
+    return clean
+
 async def initiate_stk_push(
     phone_number: str,
     amount: float,
@@ -74,15 +95,7 @@ async def initiate_stk_push(
         return {"ResponseCode": "1", "errorMessage": f"M-Pesa Authentication failed: {str(e)}"}
         
     password, timestamp = generate_mpesa_password(config["shortcode"], config["passkey"])
-
-    # Phone number normalization (254XXXXXXXXX)
-    phone = phone_number.strip().replace("+", "").replace(" ", "")
-    if phone.startswith("0"):
-        phone = "254" + phone[1:]
-    elif phone.startswith("7") or phone.startswith("1"):
-        phone = "254" + phone
-    elif not phone.startswith("254"):
-        phone = "254" + phone
+    phone = normalize_phone_number(phone_number)
 
     payload = {
         "BusinessShortCode": config["shortcode"],
@@ -99,7 +112,8 @@ async def initiate_stk_push(
     }
 
     url = f"{base_url}/mpesa/stkpush/v1/processrequest"
-    logger.info(f"STK Push Request: {url} (Phone: {phone}, Amount: {amount})")
+    logger.info(f"STK Push Request: {url} (Phone: {phone}, Amount: {amount}, Env: {config['env']})")
+    # Log secured payload for debugging
     logger.debug(f"Payload (Secured): {json.dumps({**payload, 'Password': '***'})}")
 
     async with httpx.AsyncClient(timeout=30) as client:
@@ -114,16 +128,16 @@ async def initiate_stk_push(
             )
             
             data = response.json()
-            if response.status_code != 200:
+            if response.status_code != 200 or data.get("ResponseCode") != "0":
                 logger.error(f"STK Push Failed! Status: {response.status_code}")
                 logger.error(f"Safaricom Response Body: {response.text}")
                 return {
-                    "ResponseCode": str(response.status_code),
-                    "errorMessage": data.get("errorMessage", "Safaricom API Error"),
+                    "ResponseCode": data.get("ResponseCode", str(response.status_code)),
+                    "errorMessage": data.get("errorMessage", data.get("ResponseDescription", "Safaricom API Error")),
                     "details": data
                 }
             
-            logger.info(f"STK Push Success: {data.get('ResponseDescription')}")
+            logger.info(f"STK Push Success: {data.get('ResponseDescription')} (CheckoutID: {data.get('CheckoutRequestID')})")
             return data
             
         except Exception as e:
@@ -145,6 +159,8 @@ async def query_stk_push_status(checkout_request_id: str) -> dict:
     }
 
     url = f"{base_url}/mpesa/stkpushquery/v1/query"
+    logger.info(f"STK Query Request: {url} (CheckoutID: {checkout_request_id})")
+    
     async with httpx.AsyncClient(timeout=30) as client:
         response = await client.post(
             url,
