@@ -7,7 +7,8 @@ from app.database.database import AsyncSessionLocal, engine
 from app.models.models import Base, AdminUser, AdminRole, SystemSetting, SettingScope
 from app.core.security import hash_password
 from app.config.settings import settings
-from app.routers import auth, plans, payments, subscriptions, vouchers, admin, users
+from app.routers import auth, plans, payments, subscriptions, vouchers, admin, users, debug
+from app.middleware.error_handler import ErrorHandlingMiddleware
 
 logging.basicConfig(
     level=logging.INFO,
@@ -82,6 +83,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.add_middleware(ErrorHandlingMiddleware)
+
 API_PREFIX = "/api/v1"
 app.include_router(auth.router, prefix=API_PREFIX)
 app.include_router(plans.router, prefix=API_PREFIX)
@@ -90,6 +93,7 @@ app.include_router(subscriptions.router, prefix=API_PREFIX)
 app.include_router(vouchers.router, prefix=API_PREFIX)
 app.include_router(admin.router, prefix=API_PREFIX)
 app.include_router(users.router, prefix=API_PREFIX)
+app.include_router(debug.router, prefix=API_PREFIX)
 
 
 @app.get("/")
