@@ -52,8 +52,8 @@ async def get_mpesa_access_token() -> str:
 
 def generate_mpesa_password(shortcode: str, passkey: str) -> tuple[str, str]:
     """Generate STK push password and timestamp."""
-    # Use EAT (UTC+3) for timestamp as Safaricom is in Kenya
-    # However, Daraja usually accepts UTC if consistent. Let's stick to UTC for now but ensure it's formatted correctly.
+    # Use UTC but Safaricom expects a specific format. 
+    # Some production systems prefer EAT (UTC+3), but Daraja handles UTC if formatted as below.
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     raw = f"{shortcode}{passkey}{timestamp}"
     password = base64.b64encode(raw.encode()).decode()
@@ -99,81 +99,68 @@ async def initiate_stk_push(
     password, timestamp = generate_mpesa_password(config["shortcode"], config["passkey"])
     phone = normalize_phone_number(phone_number)
 
-    # Determine TransactionType: 
-    # CustomerPayBillOnline for Paybills
-    # CustomerBuyGoodsOnline for Till Numbers
-    # Most ShortCodes of 6-7 digits are Paybills. 
-    # Let's default to CustomerPayBillOnline but make it robust.
-    transaction_type = "CustomerPayBillOnline"
+    # For Paybills, TransactionType is CustomerPayBillOnline
+    # For Buy Goods (Tills), TransactionType is CustomerBuyGoodsOnline
+    # If the prompt is not showing, it's often because the wrong type is used.
+    # We will default to CustomerPayBillOnline but retry with BuyGoods if it fails with a specific error.
     
-    payload = {
-        "BusinessShortCode": config["shortcode"],
-        "Password": password,
-        "Timestamp": timestamp,
-        "TransactionType": transaction_type,
-        "Amount": int(amount),
-        "PartyA": phone,
-        "PartyB": config["shortcode"], # For Paybill, PartyB is the ShortCode
-        "PhoneNumber": phone,
-        "CallBackURL": callback_url or config["callback_url"],
-        "AccountReference": account_reference[:12], # Safaricom limit is often 12 chars
-        "TransactionDesc": transaction_desc[:20],
-    }
+    async def try_push(t_type: str) -> dict:
+        payload = {
+            "BusinessShortCode": config["shortcode"],
+            "Password": password,
+            "Timestamp": timestamp,
+            "TransactionType": t_type,
+            "Amount": int(amount),
+            "PartyA": phone,
+            "PartyB": config["shortcode"],
+            "PhoneNumber": phone,
+            "CallBackURL": callback_url or config["callback_url"],
+            "AccountReference": account_reference[:12],
+            "TransactionDesc": transaction_desc[:20],
+        }
 
-    url = f"{base_url}/mpesa/stkpush/v1/processrequest"
-    logger.info(f"STK Push: REQUEST {url} (PHONE: {phone}, AMOUNT: {amount}, ENV: {config['env']})")
-    # Log payload without secrets
-    debug_payload = {**payload, 'Password': '***'}
-    logger.info(f"STK Push: PAYLOAD {json.dumps(debug_payload)}")
+        url = f"{base_url}/mpesa/stkpush/v1/processrequest"
+        logger.info(f"STK Push ({t_type}): REQUEST {url} (PHONE: {phone}, AMOUNT: {amount})")
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            try:
+                response = await client.post(
+                    url,
+                    json=payload,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Content-Type": "application/json",
+                    },
+                )
+                
+                data = response.json()
+                logger.info(f"STK Push ({t_type}): RESPONSE BODY {response.text}")
+                return {"status": response.status_code, "data": data, "text": response.text}
+            except Exception as e:
+                logger.error(f"STK Push ({t_type}): API ERROR {str(e)}")
+                return {"status": 500, "data": {"errorMessage": str(e)}, "text": str(e)}
 
-    async with httpx.AsyncClient(timeout=30) as client:
-        try:
-            response = await client.post(
-                url,
-                json=payload,
-                headers={
-                    "Authorization": f"Bearer {access_token}",
-                    "Content-Type": "application/json",
-                },
-            )
-            
-            data = response.json()
-            logger.info(f"STK Push: RESPONSE BODY {response.text}")
+    # Try PayBill first
+    result = await try_push("CustomerPayBillOnline")
+    
+    # If it fails with "invalid" or similar, try BuyGoods
+    if result["status"] != 200 or result["data"].get("ResponseCode") != "0":
+        err_msg = result["text"].lower()
+        if "invalid" in err_msg or "shortcode" in err_msg or "type" in err_msg:
+            logger.info("STK Push: PayBill failed, retrying with CustomerBuyGoodsOnline...")
+            result = await try_push("CustomerBuyGoodsOnline")
 
-            if response.status_code != 200 or data.get("ResponseCode") != "0":
-                logger.error(f"STK Push: REJECTED Status={response.status_code} ResponseCode={data.get('ResponseCode')}")
-                # If PayBill fails, try BuyGoods if the error suggests it
-                if "invalid" in response.text.lower() and transaction_type == "CustomerPayBillOnline":
-                    logger.info("STK Push: Retrying with CustomerBuyGoodsOnline...")
-                    payload["TransactionType"] = "CustomerBuyGoodsOnline"
-                    # For BuyGoods, PartyB is often the Store Number or the same ShortCode
-                    # Let's try just changing the type first
-                    response = await client.post(
-                        url,
-                        json=payload,
-                        headers={
-                            "Authorization": f"Bearer {access_token}",
-                            "Content-Type": "application/json",
-                        },
-                    )
-                    data = response.json()
-                    logger.info(f"STK Push Retry: RESPONSE BODY {response.text}")
-                    if response.status_code == 200 and data.get("ResponseCode") == "0":
-                        logger.info(f"STK Push Success (BuyGoods): {data.get('ResponseDescription')}")
-                        return data
-
-                return {
-                    "ResponseCode": data.get("ResponseCode", str(response.status_code)),
-                    "errorMessage": data.get("errorMessage", data.get("ResponseDescription", "Safaricom API Error")),
-                    "details": data
-                }
-            
-            logger.info(f"STK Push: ACCEPTED Description={data.get('ResponseDescription')} CheckoutID={data.get('CheckoutRequestID')}")
-            return data
-            
-        except Exception as e:
-            logger.error(f"STK Push: API ERROR {str(e)}")
-            return {"ResponseCode": "1", "errorMessage": f"Connection to Safaricom failed: {str(e)}"}
+    data = result["data"]
+    if result["status"] == 200 and data.get("ResponseCode") == "0":
+        logger.info(f"STK Push: ACCEPTED Description={data.get('ResponseDescription')} CheckoutID={data.get('CheckoutRequestID')}")
+        return data
+    else:
+        logger.error(f"STK Push: FINAL REJECTION Status={result['status']} ResponseCode={data.get('ResponseCode')}")
+        return {
+            "ResponseCode": data.get("ResponseCode", str(result["status"])),
+            "errorMessage": data.get("errorMessage", data.get("ResponseDescription", "Safaricom API Error")),
+            "details": data
+        }
 
 async def query_stk_push_status(checkout_request_id: str) -> dict:
     """Query the status of an STK push transaction."""
