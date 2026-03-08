@@ -14,7 +14,7 @@ class Settings(BaseSettings):
     MPESA_PASSKEY: str = ""
     MPESA_SHORTCODE: str = ""
     MPESA_CALLBACK_URL: str = "https://example.com/api/v1/payments/mpesa/callback"
-    MPESA_ENV: str = "sandbox"
+    MPESA_ENV: str = "production"
 
     # SMS
     SMS_MODE: str = "sandbox"
