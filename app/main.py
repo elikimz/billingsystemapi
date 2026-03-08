@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 async def seed_default_admin():
     async with AsyncSessionLocal() as db:
-        result = await db.execute(select(AdminUser))
-        if not result.scalar_one_or_none():
+        result = await db.execute(select(AdminUser).limit(1))
+        if not result.scalars().first():
             admin_user = AdminUser(
                 full_name="Super Admin",
                 email=settings.ADMIN_DEFAULT_EMAIL,
