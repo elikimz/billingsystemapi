@@ -118,7 +118,6 @@ class SubscriptionOut(BaseModel):
     expires_at: Optional[datetime]
     payment_reference: Optional[str]
     created_at: datetime
-    plan: Optional[PlanOut] = None
 
     class Config:
         from_attributes = True
@@ -177,8 +176,8 @@ class VoucherOut(BaseModel):
     plan_id: UUID
     status: str
     expires_at: Optional[datetime]
+    redeemed_at: Optional[datetime] = None
     created_at: datetime
-    plan: Optional[PlanOut] = None
 
     class Config:
         from_attributes = True

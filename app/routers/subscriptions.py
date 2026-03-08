@@ -41,7 +41,7 @@ async def check_active_subscription(
     if not user:
         return {"active": False, "message": "No user found"}
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     sub_result = await db.execute(
         select(Subscription).where(
             Subscription.user_id == user.id,

@@ -4,7 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
 from uuid import UUID
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from app.database.database import get_async_db
 from app.models.models import (
     User, Plan, Payment, Subscription, Transaction, Device,
@@ -172,7 +172,7 @@ async def mpesa_callback(
             user = user_result.scalar_one_or_none()
 
             if plan and user:
-                now = datetime.now(timezone.utc)
+                now = datetime.utcnow()
                 expires_at = now + timedelta(hours=plan.duration_hours)
 
                 # Deactivate existing active subscriptions

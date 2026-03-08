@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from typing import List
 from uuid import UUID
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from app.database.database import get_async_db
 from app.models.models import (
     Voucher, VoucherStatus, Plan, User, Subscription, Transaction,
@@ -52,7 +52,7 @@ async def generate_vouchers(
             plan_id=plan.id,
             code=code,
             status=VoucherStatus.GENERATED,
-            expires_at=datetime.now(timezone.utc) + timedelta(days=365),
+            expires_at=datetime.utcnow() + timedelta(days=365),
         )
         db.add(voucher)
         vouchers.append(voucher)
@@ -81,7 +81,7 @@ async def redeem_voucher(
     if voucher.status != VoucherStatus.GENERATED:
         raise HTTPException(status_code=400, detail=f"Voucher already {voucher.status.value}")
 
-    if voucher.expires_at and voucher.expires_at < datetime.now(timezone.utc):
+    if voucher.expires_at and voucher.expires_at < datetime.utcnow():
         voucher.status = VoucherStatus.EXPIRED
         await db.commit()
         raise HTTPException(status_code=400, detail="Voucher has expired")
@@ -105,7 +105,7 @@ async def redeem_voucher(
         db.add(user)
         await db.flush()
 
-    now = datetime.now(timezone.utc)
+    now = datetime.utcnow()
     expires_at = now + timedelta(hours=plan.duration_hours)
 
     # Expire existing active subscriptions
