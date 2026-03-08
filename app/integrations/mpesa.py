@@ -52,6 +52,8 @@ async def get_mpesa_access_token() -> str:
 
 def generate_mpesa_password(shortcode: str, passkey: str) -> tuple[str, str]:
     """Generate STK push password and timestamp."""
+    # Use EAT (UTC+3) for timestamp as Safaricom is in Kenya
+    # However, Daraja usually accepts UTC if consistent. Let's stick to UTC for now but ensure it's formatted correctly.
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
     raw = f"{shortcode}{passkey}{timestamp}"
     password = base64.b64encode(raw.encode()).decode()
@@ -66,14 +68,14 @@ def normalize_phone_number(phone: str) -> str:
         clean = "254" + clean[1:]
     elif (clean.startswith("7") or clean.startswith("1")) and len(clean) == 9:
         clean = "254" + clean
+    elif clean.startswith("254") and len(clean) == 12:
+        pass
     elif clean.startswith("+254"):
         clean = clean[1:]
-    elif not clean.startswith("254") and len(clean) == 9:
-        clean = "254" + clean
-        
-    # Final validation
+    
+    # Final check: Must be 12 digits and start with 254
     if len(clean) != 12 or not clean.startswith("254"):
-        logger.warning(f"Phone Normalization: Result {clean} may be invalid for phone {phone}")
+        logger.warning(f"Phone Normalization: Result {clean} may be invalid for input {phone}")
         
     return clean
 
@@ -97,18 +99,25 @@ async def initiate_stk_push(
     password, timestamp = generate_mpesa_password(config["shortcode"], config["passkey"])
     phone = normalize_phone_number(phone_number)
 
+    # Determine TransactionType: 
+    # CustomerPayBillOnline for Paybills
+    # CustomerBuyGoodsOnline for Till Numbers
+    # Most ShortCodes of 6-7 digits are Paybills. 
+    # Let's default to CustomerPayBillOnline but make it robust.
+    transaction_type = "CustomerPayBillOnline"
+    
     payload = {
         "BusinessShortCode": config["shortcode"],
         "Password": password,
         "Timestamp": timestamp,
-        "TransactionType": "CustomerPayBillOnline",
+        "TransactionType": transaction_type,
         "Amount": int(amount),
         "PartyA": phone,
-        "PartyB": config["shortcode"],
+        "PartyB": config["shortcode"], # For Paybill, PartyB is the ShortCode
         "PhoneNumber": phone,
         "CallBackURL": callback_url or config["callback_url"],
-        "AccountReference": account_reference,
-        "TransactionDesc": transaction_desc,
+        "AccountReference": account_reference[:12], # Safaricom limit is often 12 chars
+        "TransactionDesc": transaction_desc[:20],
     }
 
     url = f"{base_url}/mpesa/stkpush/v1/processrequest"
@@ -133,6 +142,26 @@ async def initiate_stk_push(
 
             if response.status_code != 200 or data.get("ResponseCode") != "0":
                 logger.error(f"STK Push: REJECTED Status={response.status_code} ResponseCode={data.get('ResponseCode')}")
+                # If PayBill fails, try BuyGoods if the error suggests it
+                if "invalid" in response.text.lower() and transaction_type == "CustomerPayBillOnline":
+                    logger.info("STK Push: Retrying with CustomerBuyGoodsOnline...")
+                    payload["TransactionType"] = "CustomerBuyGoodsOnline"
+                    # For BuyGoods, PartyB is often the Store Number or the same ShortCode
+                    # Let's try just changing the type first
+                    response = await client.post(
+                        url,
+                        json=payload,
+                        headers={
+                            "Authorization": f"Bearer {access_token}",
+                            "Content-Type": "application/json",
+                        },
+                    )
+                    data = response.json()
+                    logger.info(f"STK Push Retry: RESPONSE BODY {response.text}")
+                    if response.status_code == 200 and data.get("ResponseCode") == "0":
+                        logger.info(f"STK Push Success (BuyGoods): {data.get('ResponseDescription')}")
+                        return data
+
                 return {
                     "ResponseCode": data.get("ResponseCode", str(response.status_code)),
                     "errorMessage": data.get("errorMessage", data.get("ResponseDescription", "Safaricom API Error")),
