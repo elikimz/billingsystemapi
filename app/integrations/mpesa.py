@@ -3,55 +3,22 @@ import base64
 import logging
 import json
 from datetime import datetime, timezone
-from sqlalchemy import select
-from app.config.settings import settings
-from app.database.database import AsyncSessionLocal
-from app.models.models import SystemSetting
+from app.core.mpesa_config import MpesaConfig
 
 logger = logging.getLogger(__name__)
 
-MPESA_BASE_URLS = {
-    "production": "https://api.safaricom.co.ke",
-    "sandbox": "https://sandbox.safaricom.co.ke",
-}
-
-async def get_mpesa_setting(key: str, default: str) -> str:
-    """Retrieve a setting from the database or fall back to environment variables."""
-    try:
-        async with AsyncSessionLocal() as db:
-            result = await db.execute(select(SystemSetting).where(SystemSetting.key == key))
-            setting = result.scalar_one_or_none()
-            if setting and setting.value:
-                return setting.value
-    except Exception as e:
-        logger.error(f"Error fetching setting {key} from DB: {e}")
-    return default
-
-async def get_mpesa_config() -> dict:
-    """Load all M-Pesa configuration, prioritizing database settings."""
-    # We check MPESA_ENV first to determine the base URL
-    mpesa_env = await get_mpesa_setting("mpesa_env", settings.MPESA_ENV)
-    
-    config = {
-        "env": mpesa_env.lower(),
-        "consumer_key": await get_mpesa_setting("mpesa_consumer_key", settings.MPESA_CONSUMER_KEY),
-        "consumer_secret": await get_mpesa_setting("mpesa_consumer_secret", settings.MPESA_CONSUMER_SECRET),
-        "passkey": await get_mpesa_setting("mpesa_passkey", settings.MPESA_PASSKEY),
-        "shortcode": await get_mpesa_setting("mpesa_shortcode", settings.MPESA_SHORTCODE),
-    }
-    
-    config["base_url"] = MPESA_BASE_URLS.get(config["env"], MPESA_BASE_URLS["production"])
-    return config
-
 async def get_mpesa_access_token() -> str:
-    """Fetch OAuth access token from Daraja API."""
-    config = await get_mpesa_config()
+    """Fetch OAuth access token from Daraja API with production/sandbox handling."""
+    config = await MpesaConfig.load()
     base_url = config["base_url"]
+    
+    # Credentials encoding
     credentials = f"{config['consumer_key']}:{config['consumer_secret']}"
     encoded = base64.b64encode(credentials.encode()).decode()
 
+    # Request preparation
     url = f"{base_url}/oauth/v1/generate?grant_type=client_credentials"
-    logger.info(f"Fetching M-Pesa access token from: {url} (Env: {config['env']})")
+    logger.info(f"M-Pesa Token Request: {url} (Env: {config['env']})")
     
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -60,18 +27,27 @@ async def get_mpesa_access_token() -> str:
                 headers={"Authorization": f"Basic {encoded}"},
             )
             
+            # Log full Safaricom response on failure
             if response.status_code != 200:
-                logger.error(f"Failed to get M-Pesa token. Status: {response.status_code}, Response: {response.text}")
+                logger.error(f"M-Pesa OAuth Failed! Status: {response.status_code}")
+                logger.error(f"Safaricom Response Body: {response.text}")
+                
+                # Check for specific 400 Bad Request common causes
+                if "invalid_client" in response.text:
+                    logger.error("Probable Cause: Invalid Consumer Key or Secret.")
+                elif "sandbox" in url and config["env"] == "production":
+                    logger.error("Probable Cause: Sandbox URL used for Production credentials.")
             
             response.raise_for_status()
             data = response.json()
             return data["access_token"]
+            
         except httpx.HTTPStatusError as e:
-            logger.error(f"HTTP error fetching M-Pesa token from {url}: {e.response.text}")
-            raise
+            logger.error(f"HTTP Status Error: {e.response.status_code} - {e.response.text}")
+            raise Exception(f"Safaricom OAuth Error: {e.response.text}")
         except Exception as e:
-            logger.error(f"Unexpected error fetching M-Pesa token: {str(e)}")
-            raise
+            logger.error(f"Unexpected M-Pesa OAuth Error: {str(e)}")
+            raise Exception(f"Internal OAuth Failure: {str(e)}")
 
 def generate_mpesa_password(shortcode: str, passkey: str) -> tuple[str, str]:
     """Generate STK push password and timestamp."""
@@ -87,19 +63,19 @@ async def initiate_stk_push(
     transaction_desc: str,
     callback_url: str,
 ) -> dict:
-    """Initiate M-Pesa STK push payment."""
-    config = await get_mpesa_config()
+    """Initiate M-Pesa STK push payment with strict environment handling."""
+    config = await MpesaConfig.load()
     base_url = config["base_url"]
     
     try:
         access_token = await get_mpesa_access_token()
     except Exception as e:
-        logger.error(f"Could not initiate STK push due to token failure: {str(e)}")
-        return {"ResponseCode": "1", "errorMessage": f"Authentication failed: {str(e)}"}
+        logger.error(f"STK Push aborted: Token failure - {str(e)}")
+        return {"ResponseCode": "1", "errorMessage": f"M-Pesa Authentication failed: {str(e)}"}
         
     password, timestamp = generate_mpesa_password(config["shortcode"], config["passkey"])
 
-    # Normalize phone number to 254XXXXXXXXX format
+    # Phone number normalization (254XXXXXXXXX)
     phone = phone_number.strip().replace("+", "").replace(" ", "")
     if phone.startswith("0"):
         phone = "254" + phone[1:]
@@ -117,13 +93,14 @@ async def initiate_stk_push(
         "PartyA": phone,
         "PartyB": config["shortcode"],
         "PhoneNumber": phone,
-        "CallBackURL": callback_url,
+        "CallBackURL": callback_url or config["callback_url"],
         "AccountReference": account_reference,
         "TransactionDesc": transaction_desc,
     }
 
     url = f"{base_url}/mpesa/stkpush/v1/processrequest"
-    logger.info(f"Initiating STK push to {phone} for KES {amount} at {url}")
+    logger.info(f"STK Push Request: {url} (Phone: {phone}, Amount: {amount})")
+    logger.debug(f"Payload (Secured): {json.dumps({**payload, 'Password': '***'})}")
 
     async with httpx.AsyncClient(timeout=30) as client:
         try:
@@ -138,18 +115,24 @@ async def initiate_stk_push(
             
             data = response.json()
             if response.status_code != 200:
-                logger.error(f"STK push failed. Status: {response.status_code}, Response: {response.text}")
-            else:
-                logger.info(f"STK push response: {data}")
-                
+                logger.error(f"STK Push Failed! Status: {response.status_code}")
+                logger.error(f"Safaricom Response Body: {response.text}")
+                return {
+                    "ResponseCode": str(response.status_code),
+                    "errorMessage": data.get("errorMessage", "Safaricom API Error"),
+                    "details": data
+                }
+            
+            logger.info(f"STK Push Success: {data.get('ResponseDescription')}")
             return data
+            
         except Exception as e:
-            logger.error(f"Error calling STK push API: {str(e)}")
-            return {"ResponseCode": "1", "errorMessage": f"API call failed: {str(e)}"}
+            logger.error(f"STK Push API Call Error: {str(e)}")
+            return {"ResponseCode": "1", "errorMessage": f"Connection to Safaricom failed: {str(e)}"}
 
 async def query_stk_push_status(checkout_request_id: str) -> dict:
     """Query the status of an STK push transaction."""
-    config = await get_mpesa_config()
+    config = await MpesaConfig.load()
     base_url = config["base_url"]
     access_token = await get_mpesa_access_token()
     password, timestamp = generate_mpesa_password(config["shortcode"], config["passkey"])
